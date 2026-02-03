@@ -15,9 +15,25 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# MongoDB connection
+mongo_url = os.environ.get('MONGO_URL')
+client = None
+db = None
+
+if mongo_url:
+    try:
+        client = AsyncIOMotorClient(mongo_url)
+        # Default to 'test' if DB_NAME not set
+        db_name = os.environ.get('DB_NAME', 'test')
+        db = client[db_name]
+        logger = logging.getLogger("uvicorn")
+        logger.info(f"Connected to MongoDB: {db_name}")
+    except Exception as e:
+        logger = logging.getLogger("uvicorn")
+        logger.error(f"Failed to connect to MongoDB: {e}")
+else:
+    logger = logging.getLogger("uvicorn")
+    logger.warning("MONGO_URL not found. Running without database connection.")
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -44,6 +60,10 @@ async def root():
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):
+    if db is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Database not configured")
+        
     status_dict = input.model_dump()
     status_obj = StatusCheck(**status_dict)
     
@@ -56,6 +76,9 @@ async def create_status_check(input: StatusCheckCreate):
 
 @api_router.get("/status", response_model=List[StatusCheck])
 async def get_status_checks():
+    if db is None:
+        return []
+
     # Exclude MongoDB's _id field from the query results
     status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
     
@@ -86,7 +109,8 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    client.close()
+    if client:
+        client.close()
 
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
